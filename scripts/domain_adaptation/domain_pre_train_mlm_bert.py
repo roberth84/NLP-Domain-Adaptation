@@ -740,7 +740,7 @@ def train(args) -> Tuple[int, float]:
         try:
             batch = next(data_loader_iterator)
         except StopIteration:
-            iterloader = iter(data_loader_iterator)
+            data_loader_iterator = iter(data_loader)
             batch = next(data_loader_iterator)
 
         inputs, labels = batch
