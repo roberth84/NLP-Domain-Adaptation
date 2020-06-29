@@ -73,6 +73,7 @@ from transformers import (
 
 
 from torch.utils.tensorboard import SummaryWriter
+import botocore
 import boto3
 from smart_open import open
 import concurrent.futures
