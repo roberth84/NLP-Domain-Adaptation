@@ -393,6 +393,9 @@ class DFMLMDataset(Dataset):
         offset = random.randint(0, max(0, int(row['size']) - self.args.min_file_read_bytes))
         txt = load_uri(row['uri'], offset=offset, max_bytes=self.args.max_file_read_bytes)
 
+        if txt is None:
+            txt = ""
+
         startpos = 0
         if offset > 0:
             startpos = txt.find(' ')
