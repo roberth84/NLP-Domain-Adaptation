@@ -467,15 +467,16 @@ def get_model_training_objects(args, src_dir=None):
 
     if src_dir[:5].lower() == "s3://":
         dirname = tempfile.mkdtemp()
-        if saved_path[-4:].lower() == ".tgz":
-            cmd = f"aws s3 cp {saved_path} - | tar C {dirname} -zxf - . "
-        elif saved_path[-4:].lower() == ".tar":
-            cmd = f"aws s3 cp {saved_path} - | tar C {dirname} -xf - . "
+        if src_dir[-4:].lower() == ".tgz":
+            cmd = f"aws s3 cp {src_dir} - | tar C {dirname} -zxf - . "
+        elif src_dir[-4:].lower() == ".tar":
+            cmd = f"aws s3 cp {src_dir} - | tar C {dirname} -xf - . "
         else:
-            cmd = f"aws s3 cp --recursive {saved_path} {dirname}"
+            cmd = f"aws s3 cp --recursive {src_dir} {dirname}"
 
         print(cmd)
         os.system(cmd)
+        print("Copied S3 model to:", dirname)
     else:
         dirname = src_dir
 
@@ -536,8 +537,13 @@ def get_model_training_objects(args, src_dir=None):
         and os.path.isfile(os.path.join(dirname, "scheduler.pt"))
     ):
         # Load in optimizer and scheduler states
-        optimizer.load_state_dict(torch.load(os.path.join(dirname, "optimizer.pt")))
-        scheduler.load_state_dict(torch.load(os.path.join(dirname, "scheduler.pt")))
+        if args.no_cuda:
+            optimizer.load_state_dict(torch.load(os.path.join(dirname, "optimizer.pt"), map_location=torch.device('cpu')))
+            scheduler.load_state_dict(torch.load(os.path.join(dirname, "scheduler.pt"), map_location=torch.device('cpu')))
+        else:
+            optimizer.load_state_dict(torch.load(os.path.join(dirname, "optimizer.pt")))
+            scheduler.load_state_dict(torch.load(os.path.join(dirname, "scheduler.pt")))
+
 
     if args.fp16:
         try:
@@ -587,6 +593,7 @@ def train(args) -> Tuple[int, float]:
 
     model = None
     if args.should_continue:
+        saved_path = None
         print(f"Resuming state from: {state_path}")
         try:
             tmp_state = json.loads(open(state_path, 'r').read())
@@ -603,11 +610,16 @@ def train(args) -> Tuple[int, float]:
 
             # TODO: Do a deeper validation of state
             # By now the state should be valid. Replace proper variables
+            step = tmp_state["saved"]["data"][str(tmp_state["saved"]["idx"])]["global_step_idx"]
             state = tmp_state
         except Exception:
-            # print(sys.exc_info()[0])
-            # import traceback
-            # print(traceback.format_exc())
+            if saved_path:
+                print(f"Could not load model from {saved_path}")
+            else:
+                print(f"Could not get model information from {state_path}")
+            print(sys.exc_info()[0])
+            import traceback
+            print(traceback.format_exc())
             pass
 
         #     if saved_path[:5].lower() == "s3://":
@@ -812,7 +824,7 @@ def train(args) -> Tuple[int, float]:
 
     tb_writer.close()
 
-    model_dst = f"{args.output_dir}/models/global_step_{step+1}"
+    model_dst = f"{args.output_dir}/models/global_step_{step}"
     print(f"Saving final trained model to {model_dst}")
     save_model_training_objects(args, model_dst, tokenizer, model, optimizer, scheduler)
 
