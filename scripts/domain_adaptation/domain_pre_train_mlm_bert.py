@@ -742,6 +742,9 @@ def train(args) -> Tuple[int, float]:
     model.to(args.device)
     model.zero_grad()
 
+    optimizer.to(args.device)
+    scheduler.to(args.device)
+
     set_seed(args)  # Added here for reproducibility
 
     data_loader_iterator = iter(data_loader)
