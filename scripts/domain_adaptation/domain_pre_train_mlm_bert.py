@@ -611,6 +611,7 @@ def train(args) -> Tuple[int, float]:
             # TODO: Do a deeper validation of state
             # By now the state should be valid. Replace proper variables
             step = tmp_state["saved"]["data"][str(tmp_state["saved"]["idx"])]["global_step_idx"]
+            tmp_state['saved']['idx'] += 1
             state = tmp_state
         except Exception:
             if saved_path:
