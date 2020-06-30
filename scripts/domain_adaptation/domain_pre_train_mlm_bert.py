@@ -543,6 +543,8 @@ def get_model_training_objects(args, src_dir=None):
         else:
             optimizer.load_state_dict(torch.load(os.path.join(dirname, "optimizer.pt")))
             scheduler.load_state_dict(torch.load(os.path.join(dirname, "scheduler.pt")))
+            # optimizer.to(args.device)
+            # scheduler.to(args.device)
 
 
     if args.fp16:
@@ -741,9 +743,6 @@ def train(args) -> Tuple[int, float]:
     #model.to("cuda")
     model.to(args.device)
     model.zero_grad()
-
-    optimizer.to(args.device)
-    scheduler.to(args.device)
 
     set_seed(args)  # Added here for reproducibility
 
