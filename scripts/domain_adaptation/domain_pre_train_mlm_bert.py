@@ -515,6 +515,7 @@ def get_model_training_objects(args, src_dir=None):
     else:
         logger.info("Training new model from scratch")
         model = model_class(config=config)
+    model.to(args.device)
 
     # Prepare optimizer and scheduler (linear warmup and decay)
     no_decay = ["bias", "LayerNorm.weight"]
@@ -543,7 +544,6 @@ def get_model_training_objects(args, src_dir=None):
         else:
             optimizer.load_state_dict(torch.load(os.path.join(dirname, "optimizer.pt")))
             scheduler.load_state_dict(torch.load(os.path.join(dirname, "scheduler.pt")))
-
 
     if args.fp16:
         try:
@@ -584,6 +584,7 @@ def train(args) -> Tuple[int, float]:
         },
         "timed_out": False
     }
+    start_step_idx = 0
 
     if args.output_dir[:5].lower() != "s3://":
         if not os.path.exists(f"{args.output_dir}/models"):
@@ -607,10 +608,10 @@ def train(args) -> Tuple[int, float]:
             print("SP:", saved_path)
             tokenizer, model, optimizer, scheduler = get_model_training_objects(args, saved_path)
 
-
             # TODO: Do a deeper validation of state
             # By now the state should be valid. Replace proper variables
-            step = tmp_state["saved"]["data"][str(tmp_state["saved"]["idx"])]["global_step_idx"]
+            tmp_state['curr_global_step_idx'] = tmp_state["saved"]["data"][str(tmp_state["saved"]["idx"])]["global_step_idx"]
+            start_step_idx = tmp_state['curr_global_step_idx'] + 1
             tmp_state['saved']['idx'] += 1
             state = tmp_state
         except Exception:
@@ -742,15 +743,12 @@ def train(args) -> Tuple[int, float]:
     model.to(args.device)
     model.zero_grad()
 
-    optimizer.to(args.device)
-    scheduler.to(args.device)
-
     set_seed(args)  # Added here for reproducibility
 
     data_loader_iterator = iter(data_loader)
     t_b_pre = time.time()
     # TODO: Note that I removed the reproducibility of batches
-    for step in range(state["curr_global_step_idx"], args.max_steps):
+    for step in range(start_step_idx, args.max_steps):
         state["curr_global_step_idx"] = step
 
         try:
@@ -828,7 +826,8 @@ def train(args) -> Tuple[int, float]:
 
     tb_writer.close()
 
-    model_dst = f"{args.output_dir}/models/global_step_{step}"
+    # TODO: Keep track of last saved model and avoid saving it twice
+    model_dst = f"{args.output_dir}/models/global_step_idx_{step}"
     print(f"Saving final trained model to {model_dst}")
     save_model_training_objects(args, model_dst, tokenizer, model, optimizer, scheduler)
 
