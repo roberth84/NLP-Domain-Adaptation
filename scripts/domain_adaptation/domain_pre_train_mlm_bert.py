@@ -536,15 +536,18 @@ def get_model_training_objects(args, src_dir=None):
         and os.path.isfile(os.path.join(dirname, "optimizer.pt"))
         and os.path.isfile(os.path.join(dirname, "scheduler.pt"))
     ):
-        # Load in optimizer and scheduler states
-        if args.no_cuda:
-            optimizer.load_state_dict(torch.load(os.path.join(dirname, "optimizer.pt"), map_location=torch.device('cpu')))
-            scheduler.load_state_dict(torch.load(os.path.join(dirname, "scheduler.pt"), map_location=torch.device('cpu')))
-        else:
-            optimizer.load_state_dict(torch.load(os.path.join(dirname, "optimizer.pt")))
-            scheduler.load_state_dict(torch.load(os.path.join(dirname, "scheduler.pt")))
-            # optimizer.to(args.device)
-            # scheduler.to(args.device)
+        # # Load in optimizer and scheduler states
+        # if args.no_cuda:
+        #     optimizer.load_state_dict(torch.load(os.path.join(dirname, "optimizer.pt"), map_location=torch.device('cpu')))
+        #     scheduler.load_state_dict(torch.load(os.path.join(dirname, "scheduler.pt"), map_location=torch.device('cpu')))
+        # else:
+        #     optimizer.load_state_dict(torch.load(os.path.join(dirname, "optimizer.pt")))
+        #     scheduler.load_state_dict(torch.load(os.path.join(dirname, "scheduler.pt")))
+        #     # optimizer.to(args.device)
+        #     # scheduler.to(args.device)
+
+        optimizer.load_state_dict(torch.load(os.path.join(dirname, "optimizer.pt"), map_location=torch.device('cpu')))
+        scheduler.load_state_dict(torch.load(os.path.join(dirname, "scheduler.pt"), map_location=torch.device('cpu')))
 
 
     if args.fp16:
