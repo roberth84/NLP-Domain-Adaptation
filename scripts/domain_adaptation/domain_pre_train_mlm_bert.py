@@ -710,8 +710,8 @@ def train(args) -> Tuple[int, float]:
     # Setup the dataset and data loader
     ds = DFMLMDataset(train_df, tokenizer, args)
     data_loader = DataLoader(ds,
-                             #batch_size=args.train_batch_size, shuffle=True,
-                             batch_size=args.batch_size, shuffle=False,
+                             batch_size=args.train_batch_size, shuffle=True,
+                             #batch_size=args.batch_size, shuffle=False,
                              num_workers=args.data_loader_num_workers,
                              collate_fn=ds.dataloader_batch_collate)
 
