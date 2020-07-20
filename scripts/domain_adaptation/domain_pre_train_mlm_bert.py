@@ -63,6 +63,17 @@ from transformers import (
     BertConfig,
     BertForMaskedLM,
     BertTokenizer,
+    CamembertConfig,
+    CamembertForMaskedLM,
+    CamembertTokenizer,
+    DistilBertConfig,
+    DistilBertForMaskedLM,
+    DistilBertTokenizer,
+    PreTrainedModel,
+    PreTrainedTokenizer,
+    RobertaConfig,
+    RobertaForMaskedLM,
+    RobertaTokenizer,
     AutoModel,
     AutoTokenizer,
     AutoConfig,
@@ -85,7 +96,10 @@ s3_upload_futures = []
 logger = logging.getLogger(__name__)
 
 MODEL_CLASSES = {
-    "bert": (BertConfig, BertForMaskedLM, BertTokenizer)
+    "bert": (BertConfig, BertForMaskedLM, BertTokenizer),
+    "roberta": (RobertaConfig, RobertaForMaskedLM, RobertaTokenizer),
+    "distilbert": (DistilBertConfig, DistilBertForMaskedLM, DistilBertTokenizer),
+    "camembert": (CamembertConfig, CamembertForMaskedLM, CamembertTokenizer),
 }
 
 parser = argparse.ArgumentParser(
@@ -710,7 +724,7 @@ def train(args) -> Tuple[int, float]:
     # Setup the dataset and data loader
     ds = DFMLMDataset(train_df, tokenizer, args)
     data_loader = DataLoader(ds,
-                             batch_size=args.train_batch_size, shuffle=True,
+                             batch_size=args.batch_size, shuffle=True,
                              #batch_size=args.batch_size, shuffle=False,
                              num_workers=args.data_loader_num_workers,
                              collate_fn=ds.dataloader_batch_collate)
@@ -860,8 +874,9 @@ def main():
 
     args = parser.parse_args()
 
-    if not args.model_type in ["bert"]:
-        raise ValueError("For now only BERT is supported")
+    supported_models = ["bert", "roberta", "distilbert", "camembert"]
+    if not args.model_type in supported_models:
+        raise ValueError(f"Model '{args.model_type}' not supported. Must be one of: {supported_models}")
 
     # Setup distant debugging if needed
     if args.server_ip and args.server_port:
