@@ -4,25 +4,29 @@ import argparse
 from pathlib import Path
 from typing import List, Union, Optional
 
+import os
+import glob
 import nltk
 import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
+import json
+from boto3 import client, resource
 
-from tokenizers import BertWordPieceTokenizer
+from tokenizers import BertWordPieceTokenizer, ByteLevelBPETokenizer
 
 
 logger = logging.getLogger(__name__)
+s3, s3r = None, None
 
 VOCAB_CACHE_PREFIX = 'temp-in-domain'
-
 
 def parse_args():
     parser = argparse.ArgumentParser(
         "Augment BERT's vocabulary with relevant in-domain tokens.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument('--bert-vocab', type=str, required=True,
+    parser.add_argument('--tokenizer_vocab', type=str, required=True, nargs='+',
                         help='Path to original BERT vocabulary text file.')
     parser.add_argument('--corpus', required=True,
                         type=lambda paths: paths.split(','),
@@ -42,7 +46,10 @@ def parse_args():
     parser.add_argument('--overwrite_cache', action='store_true',
                         help='If provided, train tokenizer vocabulary from '
                              'scratch.')
+    parser.add_argument('--tokenizer_type', type=str, default='bert',
+                        help='type of tokenizer ("bert" or "roberta")')
     args, _ = parser.parse_known_args()
+
     return args
 
 
@@ -53,7 +60,9 @@ def train_tokenizer(corpus: Union[str, List[str]],
                     save_vocab: bool = False,
                     dst: Optional[str] = None,
                     in_domain_vocab: str = VOCAB_CACHE_PREFIX,
-                   ) -> BertWordPieceTokenizer:
+                    tokenizer_type: str = 'bert',
+                    tokenizer_kwargs: dict = None
+                   ) -> Union[BertWordPieceTokenizer, ByteLevelBPETokenizer]:
     """Train a WordPiece tokenizer from scratch.
 
     Arguments:
@@ -66,12 +75,26 @@ def train_tokenizer(corpus: Union[str, List[str]],
                              (default: Fakse)
         in_domain_vocab {str} -- Path to save trained tokenizer vocabulary
                                  (default: {'in-domain-vocab.txt'})
+        tokenizer_type {str} -- Type of tokenizer ('bert' or 'roberta')
 
     Returns:
-        A BertWordPieceTokenizer trained on in-domain corpora.
+        A BertWordPieceTokenizer or ByteLevelBPETokenizer trained on in-domain corpora.
     """
-    if not isinstance(corpus, list):
-        corpus = [corpus]
+    if tokenizer_type == 'bert':
+        tokenizer_class = BertWordPieceTokenizer
+    elif tokenizer_type == 'roberta':
+        tokenizer_class = ByteLevelBPETokenizer
+    else:
+        raise Exception("unsupported tokenizer type")
+
+    if isinstance(corpus, list):
+        if isdir(corpus[0]):
+            old_corpus = corpus
+            corpus = []
+            for corp in old_corpus:
+                corpus.extend(get_text_files(corp))
+    else:
+        corpus = get_text_files(corpus)
 
     # Load cached vocab if possible
     if not overwrite:
@@ -79,33 +102,33 @@ def train_tokenizer(corpus: Union[str, List[str]],
 
         if cached_vocab.exists():
             logger.info(f'Loading cached vocabulary at {cached_vocab}')
-            return BertWordPieceTokenizer(str(cached_vocab))
+            return tokenizer_class(str(cached_vocab))
         else:
             logger.info(f'Cached vocabulary not found at {cached_vocab}')
 
     # Train tokenizer
     logger.info('Training new WordPiece tokenizer on in-domain corpora')
-    tokenizer = BertWordPieceTokenizer(lowercase=lowercase)
+    tokenizer = tokenizer_class(**tokenizer_kwargs)
     tokenizer.train(corpus, vocab_size=vocab_size)
 
     if save_vocab:
         tokenizer.save('.' if dst is None else dst, in_domain_vocab)
-        logger.info('Saved in-domain vocabulary to '
-                    f'{Path(dst) / (in_domain_vocab + "-vocab.txt")}')
+    logger.info('Saved in-domain vocabulary to '
+                f'{Path(dst) / (in_domain_vocab + "-vocab.txt")}')
     return tokenizer
 
 
 def tokenize(texts: List[str],
-             tokenizer: BertWordPieceTokenizer,
+             tokenizer: Union[BertWordPieceTokenizer, ByteLevelBPETokenizer],
              flat_map: bool = False,
             ) -> Union[List[str],
                        List[List[str]]]:
-    """Tokenize texts using BERT WordPiece tokenizer implemented in Rust.
+    """Tokenize texts using BERT WordPiece or ByteLevelBPE tokenizer implemented in Rust.
 
     Arguments:
         texts {List[str]} -- Text data to tokenize
-        tokenizer {BertWordPieceTokenizer}
-            -- A BertWordPieceTokenizer from the `tokenizers` library
+        tokenizer {BertWordPieceTokenizer, ByteLevelBPETokenizer}
+            -- A BertWordPieceTokenizer or ByteLevelBPETokenizer from the `tokenizers` library
         flat_map {bool} -- If True, flat maps results into a List[str],
                            instead of List[List[str]].
 
@@ -211,8 +234,9 @@ def _get_stop_words() -> List[str]:
 def create_updated_vocab_txt(top_terms: List[str],
                              ori_vocab_path: str,
                              updated_vocab_path: str,
-                            ) -> None:
-    """Update BERT tokenizer vocabulary with relevant in-domain tokens.
+                             tokenizer_type: str
+                             ) -> None:
+    """Update tokenizer vocabulary with relevant in-domain tokens.
 
     This is done by replacing '[unused*]' tokens in BERT's vocabulary with
     in-domain terms that do not already exist in the existing vocabulary.
@@ -225,7 +249,9 @@ def create_updated_vocab_txt(top_terms: List[str],
     Keyword Arguments:
         ori_vocab_path {str} -- Path to existing vocabulary txt file
         updated_vocab_path {str} -- Path to save updated vocabulary txt file
+        tokenizer_type {str} -- Type of tokenizer (bert or roberta)
     """
+
     logger.info('Updating vocabulary')
     # Get stop words
     stopwords = _get_stop_words() + ["[CLS]", "[SEP]"]
@@ -233,6 +259,7 @@ def create_updated_vocab_txt(top_terms: List[str],
     # Get original vocab
     with open(ori_vocab_path) as f:
         vocab = [x.strip() for x in f.readlines()]
+        unused_tokens = [x for x in vocab if '[unused' in x]
 
     # Filter out tokens that are not stop words or part of existing vocab
     top_terms = [
@@ -242,19 +269,139 @@ def create_updated_vocab_txt(top_terms: List[str],
     ]
 
     # Create top term generator
-    unused_tokens = [x for x in vocab if '[unused' in x]
-    assert len(unused_tokens) <= len(top_terms)  # TODO Handle the inverse situation
-    mapping = dict(zip(unused_tokens, top_terms))
 
-    # Update original vocab with the next top term is the token is '[unused*]'
+    mapping = dict(zip(unused_tokens, top_terms))
+    assert len(unused_tokens) <= len(top_terms)  # TODO Handle the inverse situation
+
+    # Update original vocab with the next top term if the token is '[unused*]'
     for i, ori_term in enumerate(vocab):
         if ori_term in mapping:
             vocab[i] = mapping[ori_term]
 
     # Saves vocab
-    with open(updated_vocab_path, 'w+') as f:
+    updated_vocab_txt = (Path(updated_vocab_path) / 'vocab.txt').as_posix()
+    with open(updated_vocab_txt, 'w+') as f:
         f.write('\n'.join(vocab))
-    logger.info(f'Updated vocabulary saved at {updated_vocab_path}')
+    logger.info(f'Updated vocabulary saved at {updated_vocab_txt}')
+
+
+def create_updated_vocab_for_bpe(top_terms: List[str],
+                                 ori_vocab_path: List[str],
+                                 updated_vocab_path: str,
+                                 tokenizer_type: str
+                                 ) -> None:
+    """Update tokenizer vocabulary with relevant in-domain tokens.
+
+    This is done by replacing '[unused*]' tokens in BERT's vocabulary with
+    in-domain terms that do not already exist in the existing vocabulary.
+
+    Results are saved in a txt file.
+
+    Arguments:
+        top_terms {List[str]} -- Ranked in-domain terms in descending order
+
+    Keyword Arguments:
+        ori_vocab_path {str} -- Path to existing vocabulary txt file
+        updated_vocab_path {str} -- Path to save updated vocabulary txt file
+        tokenizer_type {str} -- Type of tokenizer (bert or roberta)
+    """
+    logger.info('Updating vocabulary')
+    # Get stop words
+    stopwords = _get_stop_words() + ["[CLS]", "[SEP]"]
+
+    ori_vocab = ori_vocab_path[0]
+    ori_merges = ori_vocab_path[1]
+
+    # Get original vocab
+    with open(ori_vocab) as f:
+        data = json.load(f)
+        vocab = [None] * len(data)
+        for token, id in data.items():
+            vocab[id] = token
+        if None in vocab:
+            print("missing vocab")
+
+    # Filter out tokens that are not stop words or part of existing vocab
+    orig_number_top_terms = len(top_terms)
+    top_terms = [
+        x
+        for x in top_terms
+        if (x not in stopwords and x not in vocab)
+    ]
+    print(f"removed {orig_number_top_terms - len(top_terms)} tokens from top_terms")
+
+    # Create top term generator
+    assert len(top_terms) >= 1000
+    vocab.extend(top_terms[0:1000])
+
+    # get original merges
+    orig_merges_data = open(ori_merges, encoding='utf-8').read().split('\n')[1:-1]
+
+    # Saves vocab so we can retrieve the merges file
+    tokenizer._tokenizer.model.save(updated_vocab_path, 'additional')
+    updated_merges_file = (Path(updated_vocab_path) / 'additional-merges.txt').as_posix()
+    updated_merges_data = open(updated_merges_file, encoding='utf-8').read().split('\n')[1:-1]
+
+    # combine merges
+    combined_merges_data = set(orig_merges_data + updated_merges_data)
+
+    trimmed_merges = []
+    # go through and remove any merges of tokens which aren't in vocab
+    for merge_data in combined_merges_data:
+        first, second = merge_data.split(' ')
+        if first not in vocab or second not in vocab:
+            continue
+        trimmed_merges.append(merge_data)
+
+    # write updated merges to output
+    updated_merges_txt = (Path(updated_vocab_path) / 'merges.txt').as_posix()
+    if os.path.exists(updated_merges_txt):
+        os.remove(updated_merges_txt)
+    with open(updated_merges_txt, 'w') as f:
+        f.write('\n'.join(trimmed_merges))
+    logger.info(f"Saved final merges to {updated_merges_txt}")
+
+    # write updated vocab to output
+    updated_vocab_json = (Path(updated_vocab_path) / 'vocab.json').as_posix()
+    if os.path.exists(updated_vocab_json):
+        os.remove(updated_vocab_json)
+    with open(updated_vocab_json, 'w') as f:
+        json.dump({i: v for v, i in enumerate(vocab)}, f, ensure_ascii=False)
+    logger.info(f"Saved final vocab to {updated_vocab_json}")
+
+
+def get_text_files(corpus):
+    if corpus[:5] == 's3://':
+        global s3r
+        if s3r is None:
+            s3r = resource('s3')
+        bucket, key = corpus[5:].split('/', 1)
+        os.makedirs(key, exist_ok=True)
+        bucket = s3r.Bucket(bucket)
+        filenames = []
+        for object in bucket.objects.filter(Prefix=key):
+            if object.key == key:
+                continue
+            if not os.path.exists(object.key):
+                bucket.download_file(object.key, object.key)
+            #with open(object.key, 'r') as f:
+            #    text = f.read()
+            #    filenames.append(text[:100])
+            filenames.append(object.key)
+        return filenames
+    else:
+        return glob.glob(f"{corpus}/**.txt")
+
+def isdir(corpus):
+    if corpus[:5] == 's3://':
+        global s3
+        if s3 is None:
+            s3 = client('s3')
+        bucket, key = corpus[5:].split('/', 1)
+        contents = s3.list_objects(Bucket=bucket, Prefix=key)['Contents']
+        return len(contents) > 1
+    else:
+        return os.path.isdir(corpus)
 
 
 if __name__ == '__main__':
@@ -265,26 +412,53 @@ if __name__ == '__main__':
     # Create directory
     Path(args.dst).mkdir(exist_ok=True, parents=True)
 
+    # create tokenizer kwargs
+    if args.tokenizer_type == 'bert':
+        tokenizer_kwargs = {'lowercase': args.lowercase}
+        update_vocab_fn = create_updated_vocab_txt
+    elif args.tokenizer_type == 'roberta':
+        tokenizer_kwargs = {'vocab_file': args.tokenizer_vocab[0], 'merges_file': args.tokenizer_vocab[1]}
+        update_vocab_fn = create_updated_vocab_for_bpe
+    else:
+        raise Exception("unsupported tokenizer type")
+
+    corpus = args.corpus
+    if isinstance(corpus, list):
+        if isdir(corpus[0]):
+            old_corpus = corpus
+            corpus = []
+            for corp in old_corpus:
+                corpus.extend(get_text_files(corp))
+    else:
+        corpus = get_text_files(corpus)
+
     # Train and save in-domain corpora as text file
-    tokenizer = train_tokenizer(args.corpus,
+    tokenizer = train_tokenizer(corpus,
                                 overwrite=args.overwrite_cache,
                                 lowercase=args.lowercase,
                                 dst=args.dst,
-                                save_vocab=True)
+                                save_vocab=True,
+                                tokenizer_type=args.tokenizer_type,
+                                tokenizer_kwargs=tokenizer_kwargs)
 
     # Load corpus / corpora
     tokenized_corpus = []
-    for c in args.corpus:
+    for c in corpus:
         logger.info(f'Tokenizing {c} with in-domain tokenizer')
         with open(c) as f:
-            tokenized_corpus += tokenize(f.readlines(),
-                                         tokenizer=tokenizer)
+            text = f.readlines()
+            tokenized_corpus += tokenize(text, tokenizer=tokenizer)
+    #tokenized_corpus = tokenize([open(c).read() for c in corpus], tokenizer=tokenizer)
 
     # Rank tokens
     ranked_tokens = rank_tokens(tokenized_corpus, mode=args.rank_by)
 
     # Save augmented vocabulary to text file
-    updated_vocab_path = (Path(args.dst) / 'vocab.txt').as_posix()
-    create_updated_vocab_txt(ranked_tokens,
-                             ori_vocab_path=args.bert_vocab,
-                             updated_vocab_path=updated_vocab_path)
+    updated_vocab_path = args.dst
+    tokenizer_vocab = args.tokenizer_vocab
+
+    #tokenizer._tokenizer.model.save(updated_vocab_path, 'updated')
+    update_vocab_fn(ranked_tokens,
+                    ori_vocab_path=tokenizer_vocab,
+                    updated_vocab_path=updated_vocab_path,
+                    tokenizer_type=args.tokenizer_type)
