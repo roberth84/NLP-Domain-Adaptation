@@ -15,7 +15,6 @@ from boto3 import client, resource
 
 from tokenizers import BertWordPieceTokenizer, ByteLevelBPETokenizer
 
-
 logger = logging.getLogger(__name__)
 s3, s3r = None, None
 
@@ -233,8 +232,7 @@ def _get_stop_words() -> List[str]:
 
 def create_updated_vocab_txt(top_terms: List[str],
                              ori_vocab_path: str,
-                             updated_vocab_path: str,
-                             tokenizer_type: str
+                             updated_vocab_path: str
                              ) -> None:
     """Update tokenizer vocabulary with relevant in-domain tokens.
 
@@ -279,16 +277,23 @@ def create_updated_vocab_txt(top_terms: List[str],
             vocab[i] = mapping[ori_term]
 
     # Saves vocab
-    updated_vocab_txt = (Path(updated_vocab_path) / 'vocab.txt').as_posix()
-    with open(updated_vocab_txt, 'w+') as f:
-        f.write('\n'.join(vocab))
+    if updated_vocab_path[:5] == 's3://':
+        with open('vocab.txt', 'w') as f:
+            f.write('\n'.join(vocab))
+        bucket, key = updated_vocab_path[5:].split('/', 1)
+        updated_vocab_txt = f"{key}/vocab.txt"
+        get_s3().upload_file('vocab.txt', bucket, updated_vocab_txt)
+    else:
+        updated_vocab_txt = (Path(updated_vocab_path) / 'vocab.txt').as_posix()
+        with open(updated_vocab_txt, 'w+') as f:
+            f.write('\n'.join(vocab))
     logger.info(f'Updated vocabulary saved at {updated_vocab_txt}')
 
 
 def create_updated_vocab_for_bpe(top_terms: List[str],
                                  ori_vocab_path: List[str],
                                  updated_vocab_path: str,
-                                 tokenizer_type: str
+                                 updated_merges_file: str
                                  ) -> None:
     """Update tokenizer vocabulary with relevant in-domain tokens.
 
@@ -336,10 +341,6 @@ def create_updated_vocab_for_bpe(top_terms: List[str],
 
     # get original merges
     orig_merges_data = open(ori_merges, encoding='utf-8').read().split('\n')[1:-1]
-
-    # Saves vocab so we can retrieve the merges file
-    tokenizer._tokenizer.model.save(updated_vocab_path, 'additional')
-    updated_merges_file = (Path(updated_vocab_path) / 'additional-merges.txt').as_posix()
     updated_merges_data = open(updated_merges_file, encoding='utf-8').read().split('\n')[1:-1]
 
     # combine merges
@@ -354,30 +355,54 @@ def create_updated_vocab_for_bpe(top_terms: List[str],
         trimmed_merges.append(merge_data)
 
     # write updated merges to output
-    updated_merges_txt = (Path(updated_vocab_path) / 'merges.txt').as_posix()
-    if os.path.exists(updated_merges_txt):
-        os.remove(updated_merges_txt)
-    with open(updated_merges_txt, 'w') as f:
-        f.write('\n'.join(trimmed_merges))
+    if updated_vocab_path[:5] == 's3://':
+        with open('merges.txt', 'w') as f:
+            f.write('\n'.join(trimmed_merges))
+        bucket, key = updated_vocab_path[5:].split('/', 1)
+        updated_merges_txt = f"{key}/merges.txt"
+        get_s3().upload_file('merges.txt', bucket, updated_merges_txt)
+        updated_merges_txt = f"s3://{bucket}/{updated_merges_txt}"
+    else:
+        updated_merges_txt = (Path(updated_vocab_path) / 'merges.txt').as_posix()
+        if os.path.exists(updated_merges_txt):
+            os.remove(updated_merges_txt)
+        with open(updated_merges_txt, 'w') as f:
+            f.write('\n'.join(trimmed_merges))
     logger.info(f"Saved final merges to {updated_merges_txt}")
 
     # write updated vocab to output
-    updated_vocab_json = (Path(updated_vocab_path) / 'vocab.json').as_posix()
-    if os.path.exists(updated_vocab_json):
-        os.remove(updated_vocab_json)
-    with open(updated_vocab_json, 'w') as f:
-        json.dump({i: v for v, i in enumerate(vocab)}, f, ensure_ascii=False)
+    if updated_vocab_path[:5] == 's3://':
+        with open('vocab.json', 'w') as f:
+            json.dump({i: v for v, i in enumerate(vocab)}, f, ensure_ascii=False)
+        bucket, key = updated_vocab_path[5:].split('/', 1)
+        updated_vocab_json = f"{key}/vocab.json"
+        get_s3().upload_file('vocab.json', bucket, updated_vocab_json)
+        updated_vocab_json = f"s3://{bucket}/{updated_vocab_json}"
+    else:
+        updated_vocab_json = (Path(updated_vocab_path) / 'vocab.json').as_posix()
+        if os.path.exists(updated_vocab_json):
+            os.remove(updated_vocab_json)
+        with open(updated_vocab_json, 'w') as f:
+            json.dump({i: v for v, i in enumerate(vocab)}, f, ensure_ascii=False)
     logger.info(f"Saved final vocab to {updated_vocab_json}")
 
+def get_s3():
+    global s3
+    if s3 is None:
+        s3 = client('s3')
+    return s3
+
+def get_s3r():
+    global s3r
+    if s3r is None:
+        s3r = resource('s3')
+    return s3r
 
 def get_text_files(corpus):
     if corpus[:5] == 's3://':
-        global s3r
-        if s3r is None:
-            s3r = resource('s3')
         bucket, key = corpus[5:].split('/', 1)
         os.makedirs(key, exist_ok=True)
-        bucket = s3r.Bucket(bucket)
+        bucket = get_s3r().Bucket(bucket)
         filenames = []
         for object in bucket.objects.filter(Prefix=key):
             if object.key == key:
@@ -394,17 +419,14 @@ def get_text_files(corpus):
 
 def isdir(corpus):
     if corpus[:5] == 's3://':
-        global s3
-        if s3 is None:
-            s3 = client('s3')
         bucket, key = corpus[5:].split('/', 1)
-        contents = s3.list_objects(Bucket=bucket, Prefix=key)['Contents']
+        contents = get_s3().list_objects(Bucket=bucket, Prefix=key)['Contents']
         return len(contents) > 1
     else:
         return os.path.isdir(corpus)
 
 
-if __name__ == '__main__':
+def main():
     args = parse_args()
 
     logging.basicConfig(level=logging.INFO)
@@ -417,7 +439,7 @@ if __name__ == '__main__':
         tokenizer_kwargs = {'lowercase': args.lowercase}
         update_vocab_fn = create_updated_vocab_txt
     elif args.tokenizer_type == 'roberta':
-        tokenizer_kwargs = {'vocab_file': args.tokenizer_vocab[0], 'merges_file': args.tokenizer_vocab[1]}
+        tokenizer_kwargs = {} #{'vocab_file': args.tokenizer_vocab[0], 'merges_file': args.tokenizer_vocab[1]}
         update_vocab_fn = create_updated_vocab_for_bpe
     else:
         raise Exception("unsupported tokenizer type")
@@ -431,6 +453,8 @@ if __name__ == '__main__':
                 corpus.extend(get_text_files(corp))
     else:
         corpus = get_text_files(corpus)
+
+    corpus = corpus[:1]
 
     # Train and save in-domain corpora as text file
     tokenizer = train_tokenizer(corpus,
@@ -457,8 +481,18 @@ if __name__ == '__main__':
     updated_vocab_path = args.dst
     tokenizer_vocab = args.tokenizer_vocab
 
-    #tokenizer._tokenizer.model.save(updated_vocab_path, 'updated')
-    update_vocab_fn(ranked_tokens,
-                    ori_vocab_path=tokenizer_vocab,
-                    updated_vocab_path=updated_vocab_path,
-                    tokenizer_type=args.tokenizer_type)
+    update_kwargs = {'updated_vocab_path': updated_vocab_path}
+    if args.tokenizer_type == 'bert':
+        if isinstance(tokenizer_vocab, list):
+            tokenizer_vocab = tokenizer_vocab[0]
+    elif args.tokenizer_type == 'roberta':
+        # this is needed for roberta so the merges file can be obtained in the update_vocab_fn
+        tokenizer._tokenizer.model.save('.', 'additional')
+        updated_merges_file = 'additional-merges.txt'
+        update_kwargs['updated_merges_file'] = updated_merges_file
+    update_kwargs['ori_vocab_path'] = tokenizer_vocab
+
+    update_vocab_fn(ranked_tokens, **update_kwargs)
+
+if __name__ == '__main__':
+    main()
