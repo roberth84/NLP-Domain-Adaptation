@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 """BERT vocabulary update functionality."""
 import logging
 import argparse
