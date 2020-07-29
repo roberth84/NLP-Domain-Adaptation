@@ -454,8 +454,6 @@ def main():
     else:
         corpus = get_text_files(corpus)
 
-    corpus = corpus[:1]
-
     # Train and save in-domain corpora as text file
     tokenizer = train_tokenizer(corpus,
                                 overwrite=args.overwrite_cache,
