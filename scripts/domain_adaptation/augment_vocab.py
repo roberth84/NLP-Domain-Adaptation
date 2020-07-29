@@ -49,6 +49,9 @@ def parse_args():
                              'scratch.')
     parser.add_argument('--tokenizer_type', type=str, default='bert',
                         help='type of tokenizer ("bert" or "roberta")')
+    parser.add_argument('--s3_mem_limit', type=int, default=30000,
+                        help="Max memory to use for documents downloaded from s3.")
+
     args, _ = parser.parse_known_args()
 
     return args
@@ -400,24 +403,35 @@ def get_s3r():
         s3r = resource('s3')
     return s3r
 
-def get_text_files(corpus):
+def get_text_files(corpus, s3_mem_limit=None):
     if corpus[:5] == 's3://':
         bucket, key = corpus[5:].split('/', 1)
         os.makedirs(key, exist_ok=True)
-        bucket = get_s3r().Bucket(bucket)
-        filenames = []
-        for object in bucket.objects.filter(Prefix=key):
-            if object.key == key:
+        s3_bucket = get_s3r().Bucket(bucket)
+        filenames = [object.key for object in s3_bucket.objects.filter(Prefix=key)]
+        mem_per_file = int((s3_mem_limit * 1e6) // len(filenames))
+        for filename in filenames:
+            if filename == key:
                 continue
-            if not os.path.exists(object.key):
-                bucket.download_file(object.key, object.key)
-            #with open(object.key, 'r') as f:
-            #    text = f.read()
-            #    filenames.append(text[:100])
-            filenames.append(object.key)
+            if not os.path.exists(filename):
+                if s3_mem_limit is None:
+                    s3_bucket.download_file(filename, filename)
+                else:
+                    data = get_s3().get_object(Bucket=bucket, Key=filename, Range=f"bytes=0-{mem_per_file}")['Body'].read()
+                    try:
+                        text_data = data.decode('utf-8-sig')
+                    except UnicodeDecodeError:
+                        try:
+                            text_data = data.decode('utf-8')
+                        except UnicodeDecodeError:
+                            text_data = data.decode('iso-8859-1')
+                    with open(filename, 'w') as f:
+                        f.write(text_data)
+                    mem_per_file
         return filenames
     else:
         return glob.glob(f"{corpus}/**.txt")
+
 
 def isdir(corpus):
     if corpus[:5] == 's3://':
@@ -452,7 +466,7 @@ def main():
             old_corpus = corpus
             corpus = []
             for corp in old_corpus:
-                corpus.extend(get_text_files(corp))
+                corpus.extend(get_text_files(corp, s3_mem_limit=args.s3_mem_limit))
     else:
         corpus = get_text_files(corpus)
 
