@@ -532,9 +532,6 @@ def get_model_training_objects(args, src_dir=None):
             tokenizer_vocab = str(Path(args.tokenizer_vocab).parent)
         tokenizer = tokenizer_class.from_pretrained(tokenizer_vocab, cache_dir=args.cache_dir)
 
-        # overwrite vocab_size if needed
-        config.vocab_size = tokenizer.vocab_size
-
     elif dirname:
         tokenizer = tokenizer_class.from_pretrained(dirname, cache_dir=args.cache_dir)
     else:
@@ -559,6 +556,10 @@ def get_model_training_objects(args, src_dir=None):
     else:
         logger.info("Training new model from scratch")
         model = model_class(config=config)
+
+    if tokenizer.vocab_size != config.vocab_size:
+        model.resize_token_embeddings(tokenizer.vocab_size)
+
     model.to(args.device)
 
     # Prepare optimizer and scheduler (linear warmup and decay)
