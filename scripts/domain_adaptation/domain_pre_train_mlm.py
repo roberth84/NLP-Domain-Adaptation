@@ -487,7 +487,6 @@ def get_model_training_objects(args, src_dir=None):
             cmd = f"aws s3 cp {src_dir} - | tar C {dirname} -xf - . "
         else:
             cmd = f"aws s3 cp --recursive {src_dir} {dirname}"
-
         print(cmd)
         os.system(cmd)
         print("Copied S3 model to:", dirname)
@@ -504,7 +503,18 @@ def get_model_training_objects(args, src_dir=None):
         config = config_class()
 
     if args.tokenizer_vocab:
-        tokenizer = tokenizer_class.from_pretrained(str(Path(args.tokenizer_vocab).parent), cache_dir=args.cache_dir)
+        tokenizer_vocab = args.tokenizer_vocab
+        if tokenizer_vocab[:5].lower() == 's3://':
+            tok_dirname = tempfile.mkdtemp()
+            new_tokenizer_path = f"{tok_dirname}/{tokenizer_vocab[5:].split('/', 1)[1]}"
+            cmd = f"aws s3 cp {tokenizer_vocab} {new_tokenizer_path}"
+            print(cmd)
+            os.system(cmd)
+            print("Copied tokenizer vocab to:", new_tokenizer_path)
+            tokenizer_vocab = new_tokenizer_path
+        else:
+            tokenizer_vocab = str(Path(args.tokenizer_vocab).parent)
+        tokenizer = tokenizer_class.from_pretrained(tokenizer_vocab, cache_dir=args.cache_dir)
     elif dirname:
         tokenizer = tokenizer_class.from_pretrained(dirname, cache_dir=args.cache_dir)
     else:
