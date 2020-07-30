@@ -475,6 +475,19 @@ def save_model_training_objects(args, dst_dir, tokenizer, model, optimizer, sche
         append_s3_upload(dirname, dst_dir, delete_after=True)
 
 
+def isdir(path):
+    if path[:5] == 's3://':
+        # Boto is not thread safe, get one session per thread
+        s3 = getattr(thread_local, 's3', None)
+        if s3 is None:
+            thread_local.s3 = boto3.session.Session().client('s3')
+            s3 = thread_local.s3
+        bucket, key = path[5:].split('/', 1)
+        contents = s3.list_objects(Bucket=bucket, Prefix=key)['Contents']
+        return len(contents) > 1
+    else:
+        return os.path.isdir(path)
+
 def get_model_training_objects(args, src_dir=None):
     if src_dir is None:
         src_dir = args.model_name_or_path
@@ -507,7 +520,10 @@ def get_model_training_objects(args, src_dir=None):
         if tokenizer_vocab[:5].lower() == 's3://':
             tok_dirname = tempfile.mkdtemp()
             new_tokenizer_path = f"{tok_dirname}/{tokenizer_vocab[5:].split('/', 1)[1]}"
-            cmd = f"aws s3 cp {tokenizer_vocab} {new_tokenizer_path}"
+            if isdir(tokenizer_vocab):
+                cmd = f"aws s3 cp --recursive {tokenizer_vocab} {new_tokenizer_path}"
+            else:
+                cmd = f"aws s3 cp {tokenizer_vocab} {new_tokenizer_path}"
             print(cmd)
             os.system(cmd)
             print("Copied tokenizer vocab to:", new_tokenizer_path)
@@ -515,6 +531,10 @@ def get_model_training_objects(args, src_dir=None):
         else:
             tokenizer_vocab = str(Path(args.tokenizer_vocab).parent)
         tokenizer = tokenizer_class.from_pretrained(tokenizer_vocab, cache_dir=args.cache_dir)
+
+        # overwrite vocab_size if needed
+        config.vocab_size = tokenizer.vocab_size
+
     elif dirname:
         tokenizer = tokenizer_class.from_pretrained(dirname, cache_dir=args.cache_dir)
     else:
