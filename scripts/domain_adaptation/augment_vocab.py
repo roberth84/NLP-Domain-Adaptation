@@ -27,7 +27,7 @@ def parse_args():
         "Augment BERT's vocabulary with relevant in-domain tokens.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument('--tokenizer_vocab', type=str, required=True, nargs='+',
+    parser.add_argument('--tokenizer_vocab', type=str, nargs='+',
                         help='Path to original BERT vocabulary text file.')
     parser.add_argument('--corpus', required=True,
                         type=lambda paths: paths.split(','),
@@ -86,8 +86,14 @@ def train_tokenizer(corpus: Union[str, List[str]],
     """
     if tokenizer_type == 'bert':
         tokenizer_class = BertWordPieceTokenizer
-    elif tokenizer_type == 'roberta':
+        special_tokens = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
+    elif tokenizer_type == 'roberta' or tokenizer_type == 'bpe_from_scratch':
         tokenizer_class = ByteLevelBPETokenizer
+        special_tokens = ["<s>", "<pad>", "</s>", "<unk>", "<mask>"]
+    elif tokenizer_type == 'bpe_from_scratch':
+        tokenizer_class = ByteLevelBPETokenizer
+        vocab_size = 50000
+        special_tokens = ["<s>", "<pad>", "</s>", "<unk>", "<mask>"]
     else:
         raise Exception("unsupported tokenizer type")
 
@@ -113,7 +119,7 @@ def train_tokenizer(corpus: Union[str, List[str]],
     # Train tokenizer
     logger.info('Training new WordPiece tokenizer on in-domain corpora')
     tokenizer = tokenizer_class(**tokenizer_kwargs)
-    tokenizer.train(corpus, vocab_size=vocab_size)
+    tokenizer.train(corpus, vocab_size=vocab_size, special_tokens=special_tokens)
 
     if save_vocab:
         tokenizer.save('.' if dst is None else dst, in_domain_vocab)
@@ -391,6 +397,73 @@ def create_updated_vocab_for_bpe(top_terms: List[str],
             json.dump({i: v for v, i in enumerate(vocab)}, f, ensure_ascii=False)
     logger.info(f"Saved final vocab to {updated_vocab_json}")
 
+
+def create_new_vocab_for_bpe(top_terms: List[str],
+                             updated_vocab_path: str,
+                             updated_merges_file: str
+                             ) -> None:
+    """Create tokenizer vocabulary with relevant in-domain tokens.
+
+    Results are saved in a txt file.
+
+    Arguments:
+        top_terms {List[str]} -- Ranked in-domain terms in descending order
+
+    Keyword Arguments:
+        updated_vocab_path {str} -- Path to save updated vocabulary json file
+        updated_merges_file {str} -- Path to save updated merges txt file
+        tokenizer_type {str} -- Type of tokenizer (bert or roberta)
+    """
+    logger.info('Updating vocabulary')
+    vocab = top_terms
+
+    # get original merges
+    merges_data = open(updated_merges_file, encoding='utf-8').read().split('\n')[1:-1]
+
+    # combine merges
+    merges_data = set(merges_data)
+
+    trimmed_merges = []
+    # go through and remove any merges of tokens which aren't in vocab
+    for merge_data in merges_data:
+        first, second = merge_data.split(' ')
+        if first not in vocab or second not in vocab:
+            continue
+        trimmed_merges.append(merge_data)
+
+    # write updated merges to output
+    if updated_vocab_path[:5] == 's3://':
+        with open('merges.txt', 'w') as f:
+            f.write('\n'.join(trimmed_merges))
+        bucket, key = updated_vocab_path[5:].split('/', 1)
+        updated_merges_txt = f"{key}/merges.txt"
+        get_s3().upload_file('merges.txt', bucket, updated_merges_txt)
+        updated_merges_txt = f"s3://{bucket}/{updated_merges_txt}"
+    else:
+        updated_merges_txt = (Path(updated_vocab_path) / 'merges.txt').as_posix()
+        if os.path.exists(updated_merges_txt):
+            os.remove(updated_merges_txt)
+        with open(updated_merges_txt, 'w') as f:
+            f.write('\n'.join(trimmed_merges))
+    logger.info(f"Saved final merges to {updated_merges_txt}")
+
+    # write updated vocab to output
+    if updated_vocab_path[:5] == 's3://':
+        with open('vocab.json', 'w') as f:
+            json.dump({i: v for v, i in enumerate(vocab)}, f, ensure_ascii=False)
+        bucket, key = updated_vocab_path[5:].split('/', 1)
+        updated_vocab_json = f"{key}/vocab.json"
+        get_s3().upload_file('vocab.json', bucket, updated_vocab_json)
+        updated_vocab_json = f"s3://{bucket}/{updated_vocab_json}"
+    else:
+        updated_vocab_json = (Path(updated_vocab_path) / 'vocab.json').as_posix()
+        if os.path.exists(updated_vocab_json):
+            os.remove(updated_vocab_json)
+        with open(updated_vocab_json, 'w') as f:
+            json.dump({i: v for v, i in enumerate(vocab)}, f, ensure_ascii=False)
+    logger.info(f"Saved final vocab to {updated_vocab_json}")
+
+
 def get_s3():
     global s3
     if s3 is None:
@@ -457,6 +530,9 @@ def main():
     elif args.tokenizer_type == 'roberta':
         tokenizer_kwargs = {} #{'vocab_file': args.tokenizer_vocab[0], 'merges_file': args.tokenizer_vocab[1]}
         update_vocab_fn = create_updated_vocab_for_bpe
+    elif args.tokenizer_type == 'bpe_from_scratch':
+        tokenizer_kwargs = {}
+        update_vocab_fn = create_new_vocab_for_bpe
     else:
         raise Exception("unsupported tokenizer type")
 
@@ -499,12 +575,18 @@ def main():
     if args.tokenizer_type == 'bert':
         if isinstance(tokenizer_vocab, list):
             tokenizer_vocab = tokenizer_vocab[0]
+        update_kwargs['ori_vocab_path'] = tokenizer_vocab
     elif args.tokenizer_type == 'roberta':
         # this is needed for roberta so the merges file can be obtained in the update_vocab_fn
         tokenizer._tokenizer.model.save('.', 'additional')
         updated_merges_file = 'additional-merges.txt'
         update_kwargs['updated_merges_file'] = updated_merges_file
-    update_kwargs['ori_vocab_path'] = tokenizer_vocab
+        update_kwargs['ori_vocab_path'] = tokenizer_vocab
+    elif args.tokenizer_type == 'bpe_from_scratch':
+        # this is needed for roberta so the merges file can be obtained in the update_vocab_fn
+        tokenizer._tokenizer.model.save('.', 'additional')
+        updated_merges_file = 'additional-merges.txt'
+        update_kwargs['updated_merges_file'] = updated_merges_file
 
     update_vocab_fn(ranked_tokens, **update_kwargs)
 
