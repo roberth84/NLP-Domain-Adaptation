@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Union, Optional
 
 import os
+import shutil
 import glob
 import nltk
 import numpy as np
@@ -546,7 +547,6 @@ def main():
     else:
         corpus = get_text_files(corpus)
 
-    # Train and save in-domain corpora as text file
     tokenizer = train_tokenizer(corpus,
                                 overwrite=args.overwrite_cache,
                                 lowercase=args.lowercase,
@@ -554,6 +554,11 @@ def main():
                                 save_vocab=True,
                                 tokenizer_type=args.tokenizer_type,
                                 tokenizer_kwargs=tokenizer_kwargs)
+
+    if args.tokenizer_type == 'bpe_from_scratch':
+        shutil.move(f"{args.dst}/temp-in-domain-merges.txt", f"{args.dst}/merges.txt", )
+        shutil.move(f"{args.dst}/temp-in-domain-vocab.json", f"{args.dst}/vocab.json", )
+        return
 
     # Load corpus / corpora
     tokenized_corpus = []
