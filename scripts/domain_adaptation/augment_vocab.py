@@ -547,17 +547,26 @@ def main():
     else:
         corpus = get_text_files(corpus)
 
+    dst = '.' if args.dst[:5] == 's3://' else arg.dst
+
     tokenizer = train_tokenizer(corpus,
                                 overwrite=args.overwrite_cache,
                                 lowercase=args.lowercase,
-                                dst=args.dst,
+                                dst=dst,
                                 save_vocab=True,
                                 tokenizer_type=args.tokenizer_type,
                                 tokenizer_kwargs=tokenizer_kwargs)
 
     if args.tokenizer_type == 'bpe_from_scratch':
-        shutil.move(f"{args.dst}/temp-in-domain-merges.txt", f"{args.dst}/merges.txt", )
-        shutil.move(f"{args.dst}/temp-in-domain-vocab.json", f"{args.dst}/vocab.json", )
+        shutil.move(f"{dst}/temp-in-domain-merges.txt", f"{dst}/merges.txt", )
+        shutil.move(f"{dst}/temp-in-domain-vocab.json", f"{dst}/vocab.json", )
+
+        # Saves vocab
+        if args.dst[:5] == 's3://':
+            bucket, key = args.dst[5:].split('/', 1)
+            get_s3().upload_file(f"{dst}/vocab.json", bucket, f"{key}/vocab.json")
+            get_s3().upload_file(f"{dst}/merges.txt", bucket, f"{key}/merges.txt")
+
         return
 
     # Load corpus / corpora
